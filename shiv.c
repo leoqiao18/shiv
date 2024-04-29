@@ -73,7 +73,11 @@ int main(int argc, char *argv[])
     memset(&attr, 0x0, sizeof(attr));
     attr.type = PERF_TYPE_POWER;
     attr.config = PERF_COUNT_ENERGY_PKG;
-    // attr.sample_period = 1;
+    // attr.type = PERF_TYPE_HARDWARE;
+    // attr.config = PERF_COUNT_HW_CPU_CYCLES;
+
+    attr.sample_freq = 1000000000;
+    attr.freq = 1;
     // attr.sample_type = PERF_SAMPLE_READ;
     // attr.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
     // attr.disabled = 0;
@@ -83,7 +87,7 @@ int main(int argc, char *argv[])
     int perf_fd = syscall(__NR_perf_event_open, &attr, -1, 0, -1, 0);
     if (perf_fd < 0)
     {
-        fprintf(stderr, "ERROR: Failed to create perf event\n");
+        fprintf(stderr, "ERROR: Failed to create perf event, errno: %d\n", errno);
         return 1;
     }
 
@@ -120,6 +124,12 @@ int main(int argc, char *argv[])
             fprintf(stderr, "ERROR: Map total_energy lookup failed\n");
             break;
         }
+
+        if (read(perf_fd, &value, sizeof(uint64_t)) != sizeof(uint64_t)) {
+            fprintf(stderr, "read error\n");
+            fprintf(stderr, "errno %d", errno);
+        }
+        printf("VALUE: %lu\n", value);
 
         // Print histogram
         printf("Total energy: %lu\n", total_energy);
