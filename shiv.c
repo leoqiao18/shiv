@@ -2,7 +2,12 @@
 #include <bpf/bpf.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/syscall.h>
 #include <unistd.h>
+#include <linux/perf_event.h>
+#include <sys/ioctl.h>
+#include <errno.h>
+#include <string.h>
 #include "shiv.h"
 
 int main(int argc, char *argv[])
@@ -14,7 +19,7 @@ int main(int argc, char *argv[])
     u_int32_t zero = 0;
 
     // Parse cli arguments
-    if (argc != 2)
+    if (argc != 1)
     {
         fprintf(stderr, "usage: %s\n", argv[0]);
         return 1;
@@ -45,7 +50,7 @@ int main(int argc, char *argv[])
         fprintf(stderr, "ERROR: finding BPF map failed\n");
         return 1;
     }
-    int map_fd = bpf_map__fd(total_energy_map);
+    int total_energy_map_fd = bpf_map__fd(total_energy_map);
 
     // Attach BPF program: block_rq_insert
     prog = bpf_object__find_program_by_name(obj, "handle_perf_event");
@@ -64,47 +69,60 @@ int main(int argc, char *argv[])
     fprintf(stderr, "Attaching BPF program to perf event\n");
 
     // Create perf event
-    struct perf_event_attr attr = {};
+    struct perf_event_attr attr;
+    memset(&attr, 0x0, sizeof(attr));
     attr.type = PERF_TYPE_POWER;
     attr.config = PERF_COUNT_ENERGY_PKG;
     // attr.sample_period = 1;
     // attr.sample_type = PERF_SAMPLE_READ;
     // attr.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
-    // attr.disabled = 1;
+    // attr.disabled = 0;
     // attr.exclude_kernel = 1;
     // attr.exclude_hv = 1;
 
-    int perf_fd = syscall(__NR_perf_event_open, &attr, 0, -1, -1, 0);
+    int perf_fd = syscall(__NR_perf_event_open, &attr, -1, 0, -1, 0);
     if (perf_fd < 0)
     {
         fprintf(stderr, "ERROR: Failed to create perf event\n");
         return 1;
     }
 
+    sleep(1);
+    uint64_t value = 420;
+    if (read(perf_fd, &value, sizeof(uint64_t)) != sizeof(uint64_t)) {
+        fprintf(stderr, "read error\n");
+        fprintf(stderr, "errno %d", errno);
+    }
+    printf("VALUE: %lu\n", value);
+    printf("fd: %d\n", perf_fd);
+
     // Attach perf event to BPF program
     // Check it out at: /sys/kernel/debug/tracing/events/raw_syscalls/sys_enter
-    if ((link[0] = bpf_program__attach_perf_event(prog, perf_fd)) < 0)
+    link[0] = bpf_program__attach_perf_event(prog, perf_fd);
+    if (libbpf_get_error(link[0]))
     {
         fprintf(stderr, "ERROR: Attaching perf event to BPF program failed\n");
         close(perf_fd);
         return 1;
     }
 
+    fprintf(stderr, "BPF program started\n");
+
     // Print histogram every interval
     while (1)
     {
-        sleep(1000);
+        sleep(1);
 
         // Get total_energy
-        u64 total_energy;
-        if (bpf_map_lookup_elem(map_fd, &zero, &total_energy) < 0)
+        uint64_t total_energy = 1;
+        if (bpf_map_lookup_elem(total_energy_map_fd, &zero, &total_energy) < 0)
         {
             fprintf(stderr, "ERROR: Map total_energy lookup failed\n");
             break;
         }
 
         // Print histogram
-        printf("Total energy: %d\n", total_energy);
+        printf("Total energy: %lu\n", total_energy);
     }
 
     // Cleanup

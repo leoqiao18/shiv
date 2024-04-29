@@ -27,16 +27,25 @@ struct
     __uint(max_entries, 10000);      // number of entries
 } pid_to_energy SEC(".maps");
 
+static const char s1[] = "Map was not updated with new element: %d\n";
+static const char s2[] = "Map updated with new element: %d\n";
+
 // SEC name is important! libbpf infers program type from it.
 // See: https://docs.kernel.org/bpf/libbpf/program_types.html#program-types-and-elf
 SEC("perf_event")
 int handle_perf_event(struct bpf_perf_event_data *ctx)
 {
     u32 zero = 0;
-    // get current energy from ctx
-    u64 new_energy = bpf_perf_event_read_value(&ctx->sample_period, sizeof(u64));
-    bpf_trace_printk("New energy reading: %d\n", new_energy);
+    u64 failure_value = 420;
+    struct bpf_perf_event_value v;
 
-    bpf_map_update_elem(&total_energy, &zero, &new_energy, BPF_ANY);
+    // get current energy from ctx
+    if (bpf_perf_prog_read_value(ctx, &v, sizeof(struct bpf_perf_event_value))) {
+        bpf_map_update_elem(&total_energy, &zero, &failure_value, BPF_ANY);
+        bpf_trace_printk(s1, sizeof(s1), v.counter);
+    }
+    bpf_map_update_elem(&total_energy, &zero, &v.counter, BPF_ANY);
+    bpf_trace_printk(s2, sizeof(s2), v.counter);
+
     return 0;
 }
