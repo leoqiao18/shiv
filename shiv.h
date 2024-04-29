@@ -1,5 +1,11 @@
 #ifndef __SHIV_H__
 #define __SHIV_H__
 
+#define PERF_TYPE_POWER 21
+
+#define PERF_COUNT_HW_ENERGY_CORES 1
+#define PERF_COUNT_HW_ENERGY_PKG 2
+#define PERF_COUNT_HW_ENERGY_GPU 4
+#define PERF_COUNT_HW_ENERGY_PSYS 5
 
 #endif

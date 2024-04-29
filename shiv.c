@@ -5,7 +5,6 @@
 #include <unistd.h>
 #include "shiv.h"
 
-
 int main(int argc, char *argv[])
 {
     struct bpf_object *obj;
@@ -39,17 +38,16 @@ int main(int argc, char *argv[])
     }
 
     // Initialize total_energy map
-    struct bpf_map *map;
-    map = bpf_object__find_map_by_name(obj, "total_energy");
-    if (libbpf_get_error(map))
+    struct bpf_map *total_energy_map;
+    total_energy_map = bpf_object__find_map_by_name(obj, "total_energy");
+    if (libbpf_get_error(total_energy_map))
     {
         fprintf(stderr, "ERROR: finding BPF map failed\n");
         return 1;
     }
-    int map_fd = bpf_map__fd(map);
+    int map_fd = bpf_map__fd(total_energy_map);
 
     // Attach BPF program: block_rq_insert
-    fprintf(stderr, "Attaching BPF program to tracepoint\n");
     prog = bpf_object__find_program_by_name(obj, "handle_perf_event");
     if (libbpf_get_error(prog))
     {
@@ -62,11 +60,33 @@ int main(int argc, char *argv[])
         fprintf(stderr, "ERROR: getting BPF program FD failed\n");
         return 1;
     }
-    // Check it out at: /sys/kernel/debug/tracing/events/raw_syscalls/sys_enter
-    link[0] = bpf_program__attach_perf_event(prog);
-    if (libbpf_get_error(link[0]))
+
+    fprintf(stderr, "Attaching BPF program to perf event\n");
+
+    // Create perf event
+    struct perf_event_attr attr = {};
+    attr.type = PERF_TYPE_POWER;
+    attr.config = PERF_COUNT_ENERGY_PKG;
+    // attr.sample_period = 1;
+    // attr.sample_type = PERF_SAMPLE_READ;
+    // attr.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
+    // attr.disabled = 1;
+    // attr.exclude_kernel = 1;
+    // attr.exclude_hv = 1;
+
+    int perf_fd = syscall(__NR_perf_event_open, &attr, 0, -1, -1, 0);
+    if (perf_fd < 0)
     {
-        fprintf(stderr, "ERROR: Attaching BPF program to tracepoint failed\n");
+        fprintf(stderr, "ERROR: Failed to create perf event\n");
+        return 1;
+    }
+
+    // Attach perf event to BPF program
+    // Check it out at: /sys/kernel/debug/tracing/events/raw_syscalls/sys_enter
+    if ((link[0] = bpf_program__attach_perf_event(prog, perf_fd)) < 0)
+    {
+        fprintf(stderr, "ERROR: Attaching perf event to BPF program failed\n");
+        close(perf_fd);
         return 1;
     }
 
@@ -90,6 +110,7 @@ int main(int argc, char *argv[])
     // Cleanup
     bpf_link__destroy(link[0]);
     bpf_object__close(obj);
+    close(perf_fd);
 
     return 0;
 }
