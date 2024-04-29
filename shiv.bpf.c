@@ -22,7 +22,7 @@ struct
 struct
 {
     __uint(type, BPF_MAP_TYPE_HASH); // map type
-    __type(key, pid_t);   // key type
+    __type(key, pid_t);              // key type
     __type(value, u64);              // value type
     __uint(max_entries, 10000);      // number of entries
 } pid_to_energy SEC(".maps");
@@ -32,11 +32,11 @@ struct
 SEC("perf_event")
 int handle_perf_event(struct bpf_perf_event_data *ctx)
 {
+    u32 zero = 0;
     // get current energy from ctx
-    u64 new_energy = bpf_perf_event_read_value(&ctx->sample_period);
+    u64 new_energy = bpf_perf_event_read_value(&ctx->sample_period, sizeof(u64));
     bpf_trace_printk("New energy reading: %d\n", new_energy);
-    
+
     bpf_map_update_elem(&total_energy, &zero, &new_energy, BPF_ANY);
     return 0;
 }
-
