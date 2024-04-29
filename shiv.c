@@ -10,13 +10,79 @@
 #include <string.h>
 #include "shiv.h"
 
+struct bpf_object *load_bpf_obj(char *prog_name)
+{
+    // Load and verify BPF application
+    fprintf(stderr, "Loading BPF code in memory\n");
+    struct bpf_object *obj = bpf_object__open_file(prog_name, NULL);
+    if (libbpf_get_error(obj))
+    {
+        fprintf(stderr, "ERROR: opening BPF object file failed\n");
+        return NULL;
+    }
+
+    // Load BPF program
+    fprintf(stderr, "Loading and verifying the code in the kernel\n");
+    if (bpf_object__load(obj))
+    {
+        fprintf(stderr, "ERROR: loading BPF object file failed\n");
+        return NULL;
+    }
+
+    return obj;
+}
+
+struct bpf_map *load_bpf_map(struct bpf_object *obj, char *map_name)
+{
+    struct bpf_map *map = bpf_object__find_map_by_name(obj, map_name);
+    if (libbpf_get_error(map))
+    {
+        fprintf(stderr, "ERROR: finding BPF map failed\n");
+        return NULL;
+    }
+    return map;
+}
+
+int create_perf_event()
+{
+    struct perf_event_attr attr;
+    memset(&attr, 0x0, sizeof(attr));
+    attr.type = PERF_TYPE_POWER;
+    attr.config = PERF_COUNT_ENERGY_PKG;
+
+    // TODO: only assuming a single socket at CPU "0"
+    int perf_fd = syscall(__NR_perf_event_open, &attr, -1 /*pid*/, 0 /*cpu*/, -1, 0);
+    if (perf_fd < 0)
+    {
+        fprintf(stderr, "ERROR: Failed to create perf event\n");
+        return -1;
+    }
+
+    return perf_fd;
+}
+
+struct bpf_link *attach_bpf_prog_to_sched_switch(struct bpf_program *prog)
+{
+    struct bpf_link *link;
+    link = bpf_program__attach_tracepoint(prog, "sched", "sched_switch");
+    if (libbpf_get_error(link))
+    {
+        fprintf(stderr, "ERROR: Attaching perf event to BPF program failed\n");
+        return NULL;
+    }
+
+    return link;
+}
+
 int main(int argc, char *argv[])
 {
     struct bpf_object *obj;
     struct bpf_program *prog;
-    struct bpf_link *link[2];
+    struct bpf_link *link;
     int prog_fd;
     u_int32_t zero = 0;
+    struct bpf_map *perf_event_descriptors_map;
+    int perf_fd;
 
     // Parse cli arguments
     if (argc != 1)
@@ -25,120 +91,40 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // Load and verify BPF application
-    fprintf(stderr, "Loading BPF code in memory\n");
-    obj = bpf_object__open_file("shiv.bpf.o", NULL);
-    if (libbpf_get_error(obj))
+    // load bpf object
+    if ((obj = load_bpf_obj("shiv.bpf.o") == NULL)
     {
-        fprintf(stderr, "ERROR: opening BPF object file failed\n");
         return 1;
     }
 
-    // Load BPF program
-    fprintf(stderr, "Loading and verifying the code in the kernel\n");
-    if (bpf_object__load(obj))
+    // load bpf map
+    if ((perf_event_descriptors_map = load_bpf_map("perf_event_descriptors")) == NULL)
     {
-        fprintf(stderr, "ERROR: loading BPF object file failed\n");
-        return 1;
+        goto cleanup_obj;
     }
 
-    // Initialize total_energy map
-    struct bpf_map *total_energy_map;
-    total_energy_map = bpf_object__find_map_by_name(obj, "total_energy");
-    if (libbpf_get_error(total_energy_map))
+    // create perf events and put into bpf map
+    // TODO: assuming only a single socket "0"
+    if((perf_fd = create_perf_event()) < 0)
     {
-        fprintf(stderr, "ERROR: finding BPF map failed\n");
-        return 1;
+        goto cleanup_obj;
     }
-    int total_energy_map_fd = bpf_map__fd(total_energy_map);
-
-    // Attach BPF program: block_rq_insert
-    prog = bpf_object__find_program_by_name(obj, "handle_perf_event");
-    if (libbpf_get_error(prog))
+    
+    // attach bpf program
+    if ((link = attach_bpf_prog_to_sched_switch(prog)) == NULL)
     {
-        fprintf(stderr, "ERROR: finding BPF program failed\n");
-        return 1;
-    }
-    prog_fd = bpf_program__fd(prog);
-    if (prog_fd < 0)
-    {
-        fprintf(stderr, "ERROR: getting BPF program FD failed\n");
-        return 1;
+        goto cleanup_perf;
     }
 
-    fprintf(stderr, "Attaching BPF program to perf event\n");
-
-    // Create perf event
-    struct perf_event_attr attr;
-    memset(&attr, 0x0, sizeof(attr));
-    attr.type = PERF_TYPE_POWER;
-    attr.config = PERF_COUNT_ENERGY_PKG;
-    // attr.type = PERF_TYPE_HARDWARE;
-    // attr.config = PERF_COUNT_HW_CPU_CYCLES;
-
-    attr.sample_freq = 1000000000;
-    attr.freq = 1;
-    // attr.sample_type = PERF_SAMPLE_READ;
-    // attr.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
-    // attr.disabled = 0;
-    // attr.exclude_kernel = 1;
-    // attr.exclude_hv = 1;
-
-    int perf_fd = syscall(__NR_perf_event_open, &attr, -1, 0, -1, 0);
-    if (perf_fd < 0)
-    {
-        fprintf(stderr, "ERROR: Failed to create perf event, errno: %d\n", errno);
-        return 1;
-    }
-
-    sleep(1);
-    uint64_t value = 420;
-    if (read(perf_fd, &value, sizeof(uint64_t)) != sizeof(uint64_t)) {
-        fprintf(stderr, "read error\n");
-        fprintf(stderr, "errno %d", errno);
-    }
-    printf("VALUE: %lu\n", value);
-    printf("fd: %d\n", perf_fd);
-
-    // Attach perf event to BPF program
-    // Check it out at: /sys/kernel/debug/tracing/events/raw_syscalls/sys_enter
-    link[0] = bpf_program__attach_perf_event(prog, perf_fd);
-    if (libbpf_get_error(link[0]))
-    {
-        fprintf(stderr, "ERROR: Attaching perf event to BPF program failed\n");
-        close(perf_fd);
-        return 1;
-    }
-
-    fprintf(stderr, "BPF program started\n");
-
-    // Print histogram every interval
     while (1)
     {
         sleep(1);
-
-        // Get total_energy
-        uint64_t total_energy = 1;
-        if (bpf_map_lookup_elem(total_energy_map_fd, &zero, &total_energy) < 0)
-        {
-            fprintf(stderr, "ERROR: Map total_energy lookup failed\n");
-            break;
-        }
-
-        if (read(perf_fd, &value, sizeof(uint64_t)) != sizeof(uint64_t)) {
-            fprintf(stderr, "read error\n");
-            fprintf(stderr, "errno %d", errno);
-        }
-        printf("VALUE: %lu\n", value);
-
-        // Print histogram
-        printf("Total energy: %lu\n", total_energy);
     }
 
-    // Cleanup
-    bpf_link__destroy(link[0]);
-    bpf_object__close(obj);
-    close(perf_fd);
 
+cleanup_perf:
+    close(perf_fd);
+cleanup_obj:
+    bpf_object__close(obj);
     return 0;
 }
