@@ -43,26 +43,50 @@ struct bpf_map *load_bpf_map(struct bpf_object *obj, char *map_name)
     return map;
 }
 
-int create_perf_event()
+int create_perf_event(struct bpf_map *map)
 {
-    struct perf_event_attr attr;
-    memset(&attr, 0x0, sizeof(attr));
-    attr.type = PERF_TYPE_POWER;
-    attr.config = PERF_COUNT_ENERGY_PKG;
+    uint32_t zero = 0;
+    int map_fd = bpf_map__fd(map);
+    
+    struct perf_event_attr attr = {
+        .type = PERF_TYPE_POWER,
+        .config = PERF_COUNT_ENERGY_PKG,
+        .size = sizeof(struct perf_event_attr)
+    };
+    // memset(&attr, 0x0, sizeof(attr));
+    // attr.type = PERF_TYPE_POWER;
+    // attr.config = PERF_COUNT_ENERGY_PKG;
 
     // TODO: only assuming a single socket at CPU "0"
-    int perf_fd = syscall(__NR_perf_event_open, &attr, -1 /*pid*/, 0 /*cpu*/, -1, 0);
+    int perf_fd = syscall(__NR_perf_event_open, &attr, -1 /*pid*/, 0 /*cpu*/, -1 /*group_fd*/, 0 /*flags*/);
     if (perf_fd < 0)
     {
         fprintf(stderr, "ERROR: Failed to create perf event\n");
         return -1;
     }
 
+    if (bpf_map_update_elem(map_fd, &zero, &perf_fd, BPF_ANY) < 0) {
+        fprintf(stderr, "ERROR: putting perf_event_fd to map failed\n");
+        close(perf_fd);
+        return -1;
+    }
+
+    sleep(1);
+    uint64_t energy;
+    read(perf_fd, &energy, sizeof(uint64_t));
+    printf("ENERGY: %lu\n", energy);
+
     return perf_fd;
 }
 
-struct bpf_link *attach_bpf_prog_to_sched_switch(struct bpf_program *prog)
+struct bpf_link *attach_bpf_prog_to_sched_switch(const struct bpf_object *obj, const char* prog_name)
 {
+    struct bpf_program *prog = bpf_object__find_program_by_name(obj, prog_name);
+    if (libbpf_get_error(prog))
+    {
+        fprintf(stderr, "ERROR: finding BPF program failed\n");
+        return NULL;
+    }
     struct bpf_link *link;
     link = bpf_program__attach_tracepoint(prog, "sched", "sched_switch");
     if (libbpf_get_error(link))
@@ -77,10 +101,7 @@ struct bpf_link *attach_bpf_prog_to_sched_switch(struct bpf_program *prog)
 int main(int argc, char *argv[])
 {
     struct bpf_object *obj;
-    struct bpf_program *prog;
     struct bpf_link *link;
-    int prog_fd;
-    u_int32_t zero = 0;
     struct bpf_map *perf_event_descriptors_map;
     int perf_fd;
 
@@ -92,26 +113,26 @@ int main(int argc, char *argv[])
     }
 
     // load bpf object
-    if ((obj = load_bpf_obj("shiv.bpf.o") == NULL)
+    if ((obj = load_bpf_obj("shiv.bpf.o")) == NULL)
     {
         return 1;
     }
 
     // load bpf map
-    if ((perf_event_descriptors_map = load_bpf_map("perf_event_descriptors")) == NULL)
+    if ((perf_event_descriptors_map = load_bpf_map(obj, "perf_event_descriptors")) == NULL)
     {
         goto cleanup_obj;
     }
 
     // create perf events and put into bpf map
     // TODO: assuming only a single socket "0"
-    if((perf_fd = create_perf_event()) < 0)
+    if((perf_fd = create_perf_event(perf_event_descriptors_map)) < 0)
     {
         goto cleanup_obj;
     }
     
     // attach bpf program
-    if ((link = attach_bpf_prog_to_sched_switch(prog)) == NULL)
+    if ((link = attach_bpf_prog_to_sched_switch(obj, "shiv_handle_sched_switch")) == NULL)
     {
         goto cleanup_perf;
     }
