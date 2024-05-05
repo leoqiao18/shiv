@@ -10,6 +10,8 @@
 #include <string.h>
 #include "shiv.h"
 
+int PERF_TYPE_POWER;
+
 struct bpf_object *load_bpf_obj(char *prog_name)
 {
     // Load and verify BPF application
@@ -53,9 +55,6 @@ int create_perf_event(struct bpf_map *map)
         .config = PERF_COUNT_ENERGY_PKG,
         .size = sizeof(struct perf_event_attr)
     };
-    // memset(&attr, 0x0, sizeof(attr));
-    // attr.type = PERF_TYPE_POWER;
-    // attr.config = PERF_COUNT_ENERGY_PKG;
 
     // TODO: only assuming a single socket at CPU "0"
     int perf_fd = syscall(__NR_perf_event_open, &attr, -1 /*pid*/, 0 /*cpu*/, -1 /*group_fd*/, 0 /*flags*/);
@@ -104,6 +103,7 @@ int main(int argc, char *argv[])
     struct bpf_link *link;
     struct bpf_map *perf_event_descriptors_map;
     int perf_fd;
+    FILE *power_type;
 
     // Parse cli arguments
     if (argc != 1)
@@ -111,6 +111,15 @@ int main(int argc, char *argv[])
         fprintf(stderr, "usage: %s\n", argv[0]);
         return 1;
     }
+
+    // read power type from file
+    power_type = fopen("/sys/bus/event_source/devices/power/type", "r");
+    if (power_type == NULL)
+    {
+        return 1;
+    }
+    fscanf(power_type, "%d", &PERF_TYPE_POWER);
+    fclose(power_type);
 
     // load bpf object
     if ((obj = load_bpf_obj("shiv.bpf.o")) == NULL)
