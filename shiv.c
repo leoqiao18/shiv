@@ -10,7 +10,6 @@
 #include <string.h>
 #include "shiv.h"
 
-int PERF_TYPE_POWER;
 
 struct bpf_object *load_bpf_obj(char *prog_name)
 {
@@ -45,13 +44,13 @@ struct bpf_map *load_bpf_map(struct bpf_object *obj, char *map_name)
     return map;
 }
 
-int create_perf_event(struct bpf_map *map)
+int create_perf_event(struct bpf_map *map, int type)
 {
     uint32_t zero = 0;
     int map_fd = bpf_map__fd(map);
     
     struct perf_event_attr attr = {
-        .type = PERF_TYPE_POWER,
+        .type = type,
         .config = PERF_COUNT_ENERGY_PKG,
         .size = sizeof(struct perf_event_attr)
     };
@@ -103,6 +102,7 @@ int main(int argc, char *argv[])
     struct bpf_link *link;
     struct bpf_map *perf_event_descriptors_map;
     int perf_fd;
+    int type;
     FILE *power_type;
 
     // Parse cli arguments
@@ -118,7 +118,7 @@ int main(int argc, char *argv[])
     {
         return 1;
     }
-    fscanf(power_type, "%d", &PERF_TYPE_POWER);
+    fscanf(power_type, "%d", &type);
     fclose(power_type);
 
     // load bpf object
@@ -135,7 +135,7 @@ int main(int argc, char *argv[])
 
     // create perf events and put into bpf map
     // TODO: assuming only a single socket "0"
-    if((perf_fd = create_perf_event(perf_event_descriptors_map)) < 0)
+    if((perf_fd = create_perf_event(perf_event_descriptors_map, type)) < 0)
     {
         goto cleanup_obj;
     }
